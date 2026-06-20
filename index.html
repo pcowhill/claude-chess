@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-board="classic">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Offline browser chess vs a local AI bot. Vanilla HTML/CSS/JS, no dependencies.">
+  <title>Claude Chess — Play vs a Local Bot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#board">Skip to board</a>
+
+  <header class="app-header">
+    <h1>♞ Claude Chess</h1>
+    <div class="header-controls">
+      <button id="theme-toggle" type="button" class="icon-btn" aria-label="Toggle light/dark theme" title="Toggle theme">🌓</button>
+      <a class="link-btn" href="tests.html">Run tests</a>
+    </div>
+  </header>
+
+  <!-- ============================ SETUP SCREEN ============================ -->
+  <main id="setup-screen" class="screen" aria-labelledby="setup-title">
+    <section class="setup-card">
+      <h2 id="setup-title">New Game</h2>
+
+      <!-- Resume prompt (shown only when a saved unfinished game exists) -->
+      <div id="resume-panel" class="resume-panel" hidden>
+        <p>You have an unfinished game.</p>
+        <div class="resume-actions">
+          <button id="resume-btn" type="button" class="btn primary">Resume Game</button>
+          <button id="discard-btn" type="button" class="btn">Start New Game</button>
+        </div>
+      </div>
+
+      <form id="setup-form">
+        <fieldset>
+          <legend>Difficulty</legend>
+          <div class="option-grid" role="radiogroup" aria-label="Difficulty">
+            <label class="option">
+              <input type="radio" name="difficulty" value="easy">
+              <span class="option-body"><strong>Easy</strong><small>~600 ELO · blunders often</small></span>
+            </label>
+            <label class="option">
+              <input type="radio" name="difficulty" value="medium" checked>
+              <span class="option-body"><strong>Medium</strong><small>~1100 ELO · occasional mistakes</small></span>
+            </label>
+            <label class="option">
+              <input type="radio" name="difficulty" value="hard">
+              <span class="option-body"><strong>Hard</strong><small>~1600 ELO · few mistakes</small></span>
+            </label>
+            <label class="option">
+              <input type="radio" name="difficulty" value="impossible">
+              <span class="option-body"><strong>Impossible</strong><small>strongest · 2000+ style*</small></span>
+            </label>
+          </div>
+          <p class="hint">*Rough educational estimates, not a true rated engine.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Time control</legend>
+          <div class="option-grid time-grid" role="radiogroup" aria-label="Time control">
+            <label class="option"><input type="radio" name="time" value="untimed" checked><span class="option-body"><strong>Untimed</strong></span></label>
+            <label class="option"><input type="radio" name="time" value="5+0"><span class="option-body"><strong>5 + 0</strong><small>Blitz</small></span></label>
+            <label class="option"><input type="radio" name="time" value="10+0"><span class="option-body"><strong>10 + 0</strong><small>Rapid</small></span></label>
+            <label class="option"><input type="radio" name="time" value="15+10"><span class="option-body"><strong>15 + 10</strong><small>Rapid +inc</small></span></label>
+            <label class="option"><input type="radio" name="time" value="custom"><span class="option-body"><strong>Custom</strong></span></label>
+          </div>
+          <div id="custom-time" class="custom-time" hidden>
+            <label>Minutes
+              <input type="number" id="custom-minutes" min="1" max="180" value="10" step="1">
+            </label>
+            <label>Increment (sec)
+              <input type="number" id="custom-increment" min="0" max="60" value="5" step="1">
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Play as</legend>
+          <div class="option-grid color-grid" role="radiogroup" aria-label="Piece color">
+            <label class="option"><input type="radio" name="color" value="random" checked><span class="option-body"><strong>Random</strong></span></label>
+            <label class="option"><input type="radio" name="color" value="white"><span class="option-body"><strong>White ♔</strong></span></label>
+            <label class="option"><input type="radio" name="color" value="black"><span class="option-body"><strong>Black ♚</strong></span></label>
+          </div>
+        </fieldset>
+
+        <button type="submit" class="btn primary big">Start Game</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- ============================ GAME SCREEN ============================ -->
+  <main id="game-screen" class="screen" hidden>
+    <div class="game-layout">
+      <!-- Board column -->
+      <div class="board-column">
+        <div id="status-bar" class="status-bar">
+          <span id="status-turn" class="status-turn">White to move</span>
+          <span id="status-detail" class="status-detail" aria-live="polite"></span>
+        </div>
+
+        <div id="board-wrap" class="board-wrap">
+          <div id="board" class="board" role="grid" aria-label="Chess board. Use arrow keys to move, Enter or Space to select and move pieces."></div>
+          <!-- Promotion overlay -->
+          <div id="promotion" class="promotion" hidden role="dialog" aria-modal="true" aria-label="Choose promotion piece"></div>
+        </div>
+
+        <div id="toast" class="toast" role="status" aria-live="assertive"></div>
+        <div id="sr-live" class="visually-hidden" aria-live="polite"></div>
+      </div>
+
+      <!-- Side panel -->
+      <aside class="side-panel" aria-label="Game information and controls">
+        <div class="clocks" id="clocks">
+          <div class="clock" id="clock-top">
+            <span class="clock-label" id="clock-top-label">Black</span>
+            <span class="clock-time" id="clock-top-time">∞</span>
+          </div>
+          <div class="clock" id="clock-bottom">
+            <span class="clock-label" id="clock-bottom-label">White</span>
+            <span class="clock-time" id="clock-bottom-time">∞</span>
+          </div>
+        </div>
+
+        <div class="captured-row">
+          <div class="captured" id="captured-top" aria-label="Pieces captured by the top player"></div>
+          <div class="captured" id="captured-bottom" aria-label="Pieces captured by the bottom player"></div>
+        </div>
+
+        <div class="controls">
+          <button id="new-game-btn" type="button" class="btn">New Game</button>
+          <button id="undo-btn" type="button" class="btn">Undo</button>
+          <button id="resign-btn" type="button" class="btn">Resign</button>
+          <button id="flip-btn" type="button" class="btn">Flip</button>
+        </div>
+
+        <div class="panel-block">
+          <h3>Move history</h3>
+          <ol id="move-history" class="move-history" aria-label="Move history in algebraic notation"></ol>
+        </div>
+
+        <div class="panel-block">
+          <h3>Position</h3>
+          <label class="field-label" for="fen-input">FEN</label>
+          <input id="fen-input" class="fen-input" type="text" spellcheck="false" aria-label="Current position FEN. Editable to load a position.">
+          <div class="btn-row">
+            <button id="copy-fen-btn" type="button" class="btn small">Copy FEN</button>
+            <button id="load-fen-btn" type="button" class="btn small">Load FEN</button>
+            <button id="copy-pgn-btn" type="button" class="btn small">Copy PGN</button>
+          </div>
+        </div>
+
+        <div class="panel-block">
+          <h3>Board theme</h3>
+          <label class="field-label" for="board-select">Board colors</label>
+          <select id="board-select" class="select">
+            <option value="classic">Classic green</option>
+            <option value="blue">Ocean blue</option>
+            <option value="walnut">Walnut</option>
+            <option value="gray">Slate gray</option>
+          </select>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <small>100% local &amp; offline. No engine, library, or network calls — all chess logic is hand-written JavaScript.</small>
+  </footer>
+
+  <!-- Scripts loaded as classic scripts so the page works from file:// too. -->
+  <script src="chess.js"></script>
+  <script src="ai.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
