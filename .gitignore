@@ -1,0 +1,17 @@
+# Dev-only tooling (e.g. Playwright for screenshots) — never shipped with the game
+node_modules/
+package-lock.json
+package.json
+
+# Browser download caches / Playwright artifacts
+.cache/
+test-results/
+playwright-report/
+
+# Screenshot scratch output
+screenshots/
+*.local.png
+
+# OS / editor cruft
+.DS_Store
+*.swp
