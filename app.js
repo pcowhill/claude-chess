@@ -15,6 +15,7 @@
   var WHITE = CE.WHITE, BLACK = CE.BLACK;
   var KING = CE.KING;
   var FLAG_CAPTURE = CE.FLAG_CAPTURE, FLAG_PROMO = CE.FLAG_PROMO;
+  var FLAG_KCASTLE = CE.FLAG_KCASTLE, FLAG_QCASTLE = CE.FLAG_QCASTLE;
   var rankOf = CE.rankOf, fileOf = CE.fileOf, makeSq = CE.makeSq;
   var pieceType = CE.pieceType, colorOf = CE.colorOf, opponent = CE.opponent;
   var squareName = CE.squareName;
@@ -22,12 +23,18 @@
   var GAME_KEY = 'claudeChess.game.v1';
   var PREFS_KEY = 'claudeChess.prefs.v1';
 
-  var GLYPH = { 1: ['♙', '♟'], 2: ['♘', '♞'], 3: ['♗', '♝'],
-    4: ['♖', '♜'], 5: ['♕', '♛'], 6: ['♔', '♚'] };
   var TYPE_NAME = { 1: 'pawn', 2: 'knight', 3: 'bishop', 4: 'rook', 5: 'queen', 6: 'king' };
   var PROMO_LETTER = { 2: 'n', 3: 'b', 4: 'r', 5: 'q' };
 
-  function glyph(piece) { return GLYPH[pieceType(piece)][colorOf(piece)]; }
+  // Bundled SVG piece set (committed under assets/; referenced by relative path,
+  // never fetched from the network). Indexed [type][color] (0 = white, 1 = black).
+  var PIECE_DIR = 'assets/pieces/cburnett/';
+  var PIECE_CODE = { 1: ['wP', 'bP'], 2: ['wN', 'bN'], 3: ['wB', 'bB'],
+    4: ['wR', 'bR'], 5: ['wQ', 'bQ'], 6: ['wK', 'bK'] };
+  function pieceImg(type, color) { return PIECE_DIR + PIECE_CODE[type][color] + '.svg'; }
+  function pieceImgFor(piece) { return pieceImg(pieceType(piece), colorOf(piece)); }
+  function pieceImgCss(url) { return 'url("' + url + '")'; }
+
   function colorKey(c) { return c === WHITE ? 'white' : 'black'; }
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -46,6 +53,7 @@
     gameOver: false,
     resultObj: null,
     thinking: false,
+    animating: false,
     botRequestId: 0,
     worker: null,
     workerOK: false,
@@ -345,9 +353,10 @@
     var piece = S.chess.board[sq];
     var span = cell.querySelector('.piece');
     if (piece) {
-      if (!span) { span = document.createElement('span'); span.className = 'piece'; cell.appendChild(span); }
-      span.textContent = glyph(piece);
+      if (!span) { span = document.createElement('span'); cell.appendChild(span); }
       span.className = 'piece ' + (colorOf(piece) === WHITE ? 'white' : 'black');
+      span.style.backgroundImage = pieceImgCss(pieceImgFor(piece));
+      span.setAttribute('aria-hidden', 'true'); // square's aria-label already names the piece
       span.style.opacity = '';
     } else if (span) {
       span.remove();
@@ -373,7 +382,7 @@
 
   // ---- Selection & input ----------------------------------------------------
   function interactable() {
-    return S.chess && !S.gameOver && !S.thinking && S.chess.turn === S.humanColor;
+    return S.chess && !S.gameOver && !S.thinking && !S.animating && S.chess.turn === S.humanColor;
   }
 
   function selectSquare(sq) {
@@ -392,7 +401,7 @@
     if (!interactable()) return;
     var piece = S.chess.board[sq];
     if (S.selected !== null) {
-      if (isLegalTarget(S.selected, sq)) { tryMove(S.selected, sq); return; }
+      if (isLegalTarget(S.selected, sq)) { tryMove(S.selected, sq, true); return; }
       if (sq === S.selected) { clearSelection(); return; }
     }
     if (piece && colorOf(piece) === S.humanColor) selectSquare(sq);
@@ -407,7 +416,7 @@
     setFocus(sq);
     if (!interactable()) return;
 
-    if (S.selected !== null && isLegalTarget(S.selected, sq)) { tryMove(S.selected, sq); return; }
+    if (S.selected !== null && isLegalTarget(S.selected, sq)) { tryMove(S.selected, sq, true); return; }
 
     var piece = S.chess.board[sq];
     if (piece && colorOf(piece) === S.humanColor) {
@@ -442,7 +451,7 @@
       var target = cellFromPoint(e.clientX, e.clientY);
       if (target) {
         var to = parseInt(target.dataset.square, 10);
-        if (isLegalTarget(drag.from, to)) { renderAll(); tryMove(drag.from, to); return; }
+        if (isLegalTarget(drag.from, to)) { renderAll(); tryMove(drag.from, to, false); return; }
       }
       renderAll(); // snap back, keep selection
     } else if (drag.wasSelected) {
@@ -468,10 +477,9 @@
     ghost.className = 'drag-ghost';
     ghost.style.width = rect.width + 'px';
     ghost.style.height = rect.height + 'px';
-    ghost.style.fontSize = (rect.height * 0.82) + 'px';
     var g = document.createElement('span');
     g.className = pieceSpan.className;
-    g.textContent = pieceSpan.textContent;
+    g.style.backgroundImage = pieceSpan.style.backgroundImage;
     ghost.appendChild(g);
     document.body.appendChild(ghost);
     S.drag.ghost = ghost;
@@ -528,34 +536,107 @@
   }
 
   // ---- Move execution -------------------------------------------------------
-  function tryMove(from, to) {
+  function tryMove(from, to, animate) {
     var cands = S.chess.generateLegalMoves().filter(function (m) { return m.from === from && m.to === to; });
     if (cands.length === 0) { flashIllegal(); return; }
     if (cands.length > 1 && (cands[0].flags & FLAG_PROMO)) {
-      showPromotion(from, to, function (letter) { executeHumanMove(from, to, letter); });
+      showPromotion(from, to, function (letter) { executeHumanMove(from, to, letter, animate); });
     } else {
       var promo = (cands[0].flags & FLAG_PROMO) ? PROMO_LETTER[cands[0].promotion] : null;
-      executeHumanMove(from, to, promo);
+      executeHumanMove(from, to, promo, animate);
     }
   }
 
-  function executeHumanMove(from, to, promoLetter) {
+  function executeHumanMove(from, to, promoLetter, animate) {
     var applied = S.chess.move({ from: from, to: to, promotion: promoLetter || 'q' });
     if (!applied) { flashIllegal(); return; }
     S.selected = null; S.legalForSelected = [];
-    onMoveMade(applied);
+    onMoveMade(applied, animate);
   }
 
-  function onMoveMade(applied) {
+  function onMoveMade(applied, animate) {
     S.lastMove = { from: applied.from, to: applied.to };
     S.selected = null; S.legalForSelected = [];
     setFocus(applied.to);
+    // For click-to-move, keyboard moves and bot moves, slide the piece from its
+    // origin to its destination first, then do the normal re-render. Drag-drop,
+    // load, resume, flip, undo and Load-FEN pass animate=false and render at once.
+    if (animate && canAnimate()) {
+      S.animating = true;
+      animateMove(applied, function () {
+        S.animating = false;
+        finishMove(applied);
+      });
+    } else {
+      finishMove(applied);
+    }
+  }
+
+  function finishMove(applied) {
     clockOnMove(colorOf(applied.piece));
     renderAll(); renderHistory(); renderCaptured(); updateFenInput(); updateStatus();
     announce(colorOf(applied.piece), applied.san);
     save();
     if (checkGameEnd()) return;
     if (S.chess.turn !== S.humanColor) requestBotMove();
+  }
+
+  // ---- Move slide animation -------------------------------------------------
+  var ANIM_OK = ('animate' in document.createElement('div'));
+  function canAnimate() {
+    if (!ANIM_OK) return false;
+    return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  // Slide the moved piece(s) from origin to destination over ~165ms. The board
+  // DOM still shows the pre-move position at this point, so we float a ghost on
+  // top, hide the static origin piece, and re-render once the slide completes.
+  // Castling slides both the king and the rook simultaneously.
+  function animateMove(applied, done) {
+    var slides = [{ from: applied.from, to: applied.to, url: pieceImgFor(applied.piece) }];
+    if (applied.flags & (FLAG_KCASTLE | FLAG_QCASTLE)) {
+      var rank = rankOf(applied.from);
+      var rookUrl = pieceImg(4, colorOf(applied.piece));
+      if (applied.flags & FLAG_KCASTLE) slides.push({ from: makeSq(rank, 7), to: makeSq(rank, 5), url: rookUrl });
+      else slides.push({ from: makeSq(rank, 0), to: makeSq(rank, 3), url: rookUrl });
+    }
+
+    var ghosts = [];
+    var pending = slides.length;
+    var finished = false;
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      ghosts.forEach(function (g) { if (g.parentNode) g.parentNode.removeChild(g); });
+      done();
+    }
+
+    slides.forEach(function (s) {
+      var fromCell = cellMap[s.from], toCell = cellMap[s.to];
+      if (!fromCell || !toCell) { if (--pending <= 0) cleanup(); return; }
+      var fr = fromCell.getBoundingClientRect();
+      var tr = toCell.getBoundingClientRect();
+      var originSpan = fromCell.querySelector('.piece');
+      if (originSpan) originSpan.style.opacity = '0';
+      var ghost = document.createElement('div');
+      ghost.className = 'slide-ghost';
+      ghost.style.width = fr.width + 'px';
+      ghost.style.height = fr.height + 'px';
+      ghost.style.left = fr.left + 'px';
+      ghost.style.top = fr.top + 'px';
+      ghost.style.backgroundImage = pieceImgCss(s.url);
+      document.body.appendChild(ghost);
+      ghosts.push(ghost);
+      var dx = tr.left - fr.left, dy = tr.top - fr.top;
+      var anim = ghost.animate(
+        [{ transform: 'translate(0px, 0px)' }, { transform: 'translate(' + dx + 'px, ' + dy + 'px)' }],
+        { duration: 165, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)', fill: 'forwards' }
+      );
+      anim.onfinish = function () { if (--pending <= 0) cleanup(); };
+    });
+
+    // Safety net: always finish even if an animation event never fires.
+    setTimeout(cleanup, 400);
   }
 
   function checkGameEnd() {
@@ -579,9 +660,12 @@
     [5, 4, 3, 2].forEach(function (type) { // Q R B N
       var b = document.createElement('button');
       b.type = 'button';
-      b.textContent = GLYPH[type][color];
       b.setAttribute('aria-label', 'Promote to ' + TYPE_NAME[type]);
-      b.className = 'piece ' + (color === WHITE ? 'white' : 'black');
+      var gi = document.createElement('span');
+      gi.className = 'piece ' + (color === WHITE ? 'white' : 'black');
+      gi.style.backgroundImage = pieceImgCss(pieceImg(type, color));
+      gi.setAttribute('aria-hidden', 'true');
+      b.appendChild(gi);
       b.addEventListener('click', function () {
         el.promotion.hidden = true;
         onChoose(PROMO_LETTER[type]);
@@ -652,7 +736,7 @@
       var r = legal[0];
       applied = S.chess.move({ from: r.from, to: r.to, promotion: 'q' });
     }
-    onMoveMade(applied);
+    onMoveMade(applied, true);
   }
 
   // ---- Clocks ---------------------------------------------------------------
@@ -804,7 +888,8 @@
     [5, 4, 3, 2, 1].forEach(function (t) {
       var missing = Math.max(0, start[t] - onBoard[t]);
       for (var i = 0; i < missing; i++) {
-        out += '<span class="cap-piece ' + (color === WHITE ? 'white' : 'black') + '">' + GLYPH[t][color] + '</span>';
+        out += '<span class="cap-piece ' + (color === WHITE ? 'white' : 'black') +
+          '" aria-hidden="true" style="background-image:' + pieceImgCss(pieceImg(t, color)) + '"></span>';
       }
     });
     return out;
